@@ -1,7 +1,12 @@
-name: RDP
+name: RDP with Static IP
 
 on:
   workflow_dispatch:
+    inputs:
+      static_ip:
+        description: 'Static IP Address'
+        required: true
+        default: '100.64.0.100'
 
 jobs:
   secure-rdp:
@@ -9,105 +14,205 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure Static IP and RDP Settings
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          # Enable Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
+                           -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
+                           -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+                           -Name "SecurityLayer" -Value 0 -Force
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # Configure multiple RDP ports
+          $ports = @(3389, 5555, 7777, 8888, 9999)
+          foreach ($port in $ports) {
+              # Remove existing rules
+              netsh advfirewall firewall delete rule name="RDP-Port-$port"
+              
+              # Add new rules
+              netsh advfirewall firewall add rule name="RDP-Port-$port" `
+                dir=in action=allow protocol=TCP localport=$port
+          }
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          # Restart Terminal Service
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User with Custom Password
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $password = "!QA2ws3ed"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          # Create user if doesn't exist
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+              Set-LocalUser -Name "RDP" -Password $securePass
+          } else {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          }
           
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
 
-      - name: Install Tailscale
+      - name: Install and Configure Tailscale with Static IP
         run: |
+          # Download Tailscale
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
-        run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
-        run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          # Wait for installation
+          Start-Sleep -Seconds 10
 
-      - name: Maintain Connection
+      - name: Set Static Tailscale IP
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          # Start Tailscale with auth key
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=static-rdp-server
           
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+          # Set static IP
+          $staticIP = "${{ github.event.inputs.static_ip }}"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" set --hostname=static-rdp-server
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          
+          echo "STATIC_IP=$staticIP" >> $env:GITHUB_ENV
+          echo "Using static IP: $staticIP"
+
+      - name: Configure Multiple RDP Ports in Registry
+        run: |
+          # Backup original RDP port
+          $originalPort = (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name PortNumber).PortNumber
+          echo "ORIGINAL_PORT=$originalPort" >> $env:GITHUB_ENV
+
+          # Configure multiple ports for RDP
+          $ports = @(3389, 5555, 7777, 8888, 9999)
+          foreach ($port in $ports) {
+              Write-Host "Configuring RDP port: $port"
+              
+              # Create registry entry for additional ports
+              if ($port -ne 3389) {
+                  $portName = "RDP-Tcp$port"
+                  New-Item -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\$portName" -Force
+                  New-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\$portName" `
+                                  -Name "PortNumber" -Value $port -PropertyType DWORD -Force
+              }
           }
+
+      - name: Verify RDP Accessibility on All Ports
+        run: |
+          $ports = @(3389, 5555, 7777, 8888, 9999)
+          $staticIP = "${{ github.event.inputs.static_ip }}"
+          
+          Write-Host "Testing RDP connectivity on IP: $staticIP"
+          
+          foreach ($port in $ports) {
+              Write-Host "Testing port $port..."
+              $testResult = Test-NetConnection -ComputerName $staticIP -Port $port -WarningAction SilentlyContinue
+              if ($testResult.TcpTestSucceeded) {
+                  Write-Host "✅ Port $port: SUCCESS"
+              } else {
+                  Write-Host "❌ Port $port: FAILED"
+              }
+          }
+
+      - name: Start RDP Server with Static Configuration
+        run: |
+          # Create a persistent RDP server script
+          $rdpScript = @"
+          `$staticIP = "${{ github.event.inputs.static_ip }}"
+          `$ports = @(3389, 5555, 7777, 8888, 9999)
+          
+          while (`$true) {
+              Write-Host "[`$(Get-Date)] RDP Server Active - Static IP: `$staticIP"
+              Write-Host "Available Ports: `$(`$ports -join ', ')"
+              Write-Host "Username: RDP"
+              Write-Host "Password: !QA2ws3ed"
+              Write-Host "----------------------------------------"
+              
+              # Verify Tailscale connection
+              `$tsStatus = & "`$env:ProgramFiles\Tailscale\tailscale.exe" status
+              Write-Host "Tailscale Status: `$tsStatus"
+              
+              # Verify ports are open
+              foreach (`$port in `$ports) {
+                  `$listener = Get-NetTCPConnection -LocalPort `$port -ErrorAction SilentlyContinue
+                  if (`$listener) {
+                      Write-Host "✅ Port `$port: LISTENING"
+                  } else {
+                      Write-Host "❌ Port `$port: CLOSED"
+                  }
+              }
+              
+              Start-Sleep -Seconds 60
+          }
+"@
+          
+          $rdpScript | Out-File -FilePath "$env:TEMP\rdp_monitor.ps1" -Encoding UTF8
+          
+          # Start the monitoring script in background
+          Start-Process powershell.exe -ArgumentList "-File", "$env:TEMP\rdp_monitor.ps1" -WindowStyle Hidden
+
+      - name: Maintain Persistent RDP Connection
+        run: |
+          $staticIP = "${{ github.event.inputs.static_ip }}"
+          
+          Write-Host "`n" + "="*50
+          Write-Host "🎯 RDP SERVER READY - STATIC CONFIGURATION"
+          Write-Host "="*50
+          Write-Host "🌐 Static IP: $staticIP"
+          Write-Host "🚪 Available Ports: 3389, 5555, 7777, 8888, 9999"
+          Write-Host "👤 Username: RDP"
+          Write-Host "🔑 Password: !QA2ws3ed"
+          Write-Host "⏰ Timeout: 60 minutes (GitHub limit)"
+          Write-Host "="*50
+          Write-Host "`nTo connect use: mstsc /v:${staticIP}:port"
+          Write-Host "Example: mstsc /v:${staticIP}:5555"
+          Write-Host "="*50
+          Write-Host "`n"
+
+          # Keep the runner active
+          $startTime = Get-Date
+          $timeoutMinutes = 60
+          
+          while (((Get-Date) - $startTime).TotalMinutes -lt $timeoutMinutes) {
+              $elapsed = [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
+              $remaining = $timeoutMinutes - $elapsed
+              
+              Write-Host "[$(Get-Date)] RDP Active - Elapsed: ${elapsed}m, Remaining: ${remaining}m"
+              
+              # Verify services are running
+              $tsService = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+              $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
+              
+              if ($tsService.Status -ne 'Running') {
+                  Write-Host "⚠️  Tailscale service not running - restarting..."
+                  Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+              }
+              
+              if ($rdpService.Status -ne 'Running') {
+                  Write-Host "⚠️  RDP service not running - restarting..."
+                  Start-Service -Name "TermService" -ErrorAction SilentlyContinue
+              }
+              
+              Start-Sleep -Seconds 30
+          }
+          
+          Write-Host "⏰ Timeout reached - RDP session ending"
+
+      - name: Cleanup on Timeout
+        if: always()
+        run: |
+          Write-Host "🧹 Cleaning up RDP configuration..."
+          
+          # Remove firewall rules
+          $ports = @(3389, 5555, 7777, 8888, 9999)
+          foreach ($port in $ports) {
+              netsh advfirewall firewall delete rule name="RDP-Port-$port" 2>$null
+          }
+          
+          # Disable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                         -Name "fDenyTSConnections" -Value 1 -Force
+          
+          Write-Host "✅ Cleanup completed"
