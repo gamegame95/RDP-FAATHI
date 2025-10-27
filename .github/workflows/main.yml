@@ -1,11 +1,7 @@
-name: Permanent RDP with Static Hostname
+name: Permanent RDP Server
 
 on:
   workflow_dispatch:
-
-env:
-  STATIC_HOSTNAME: "my-permanent-rdp"
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   rdp-server:
@@ -15,149 +11,91 @@ jobs:
     steps:
     - name: Install Tailscale
       run: |
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-        $installerPath = "$env:TEMP\tailscale.msi"
-        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-        Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+        Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
-        Write-Host "✅ Tailscale installed"
 
-    - name: Configure Tailscale
+    - name: Setup Tailscale
       run: |
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:STATIC_HOSTNAME --accept-routes --accept-dns
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-permanent-rdp
         Start-Sleep -Seconds 10
-        $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-        $tailscaleStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
-        $magicDNS = $tailscaleStatus.Self.DNSName
-        echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
-        echo "MAGIC_DNS=$magicDNS" >> $env:GITHUB_ENV
-        Write-Host "🔗 MagicDNS: $magicDNS"
-        Write-Host "🌐 IP: $tailscaleIP"
+        $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $hostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
+        echo "RDP_IP=$ip" >> $env:GITHUB_ENV
+        echo "RDP_HOSTNAME=$hostname" >> $env:GITHUB_ENV
 
-    - name: Setup Persistent Environment
+    - name: Configure Windows RDP
       run: |
-        $persistentDirs = @(
-            "C:\PersistentData",
-            "C:\PersistentData\Desktop",
-            "C:\PersistentData\Documents", 
-            "C:\PersistentData\Downloads",
-            "C:\PersistentData\Configs"
-        )
-        foreach ($dir in $persistentDirs) {
-            New-Item -ItemType Directory -Path $dir -Force
-        }
-        Write-Host "✅ Persistent environment setup"
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
+        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 0 /f
+        
+        netsh advfirewall firewall add rule name="RDP-3389" dir=in action=allow protocol=TCP localport=3389
+        netsh advfirewall firewall add rule name="RDP-5555" dir=in action=allow protocol=TCP localport=5555
+        netsh advfirewall firewall add rule name="RDP-7777" dir=in action=allow protocol=TCP localport=7777
+        netsh advfirewall firewall add rule name="RDP-8888" dir=in action=allow protocol=TCP localport=8888
+        netsh advfirewall firewall add rule name="RDP-9999" dir=in action=allow protocol=TCP localport=9999
+        
+        net user RDP "!QA2ws3ed" /add /y
+        net localgroup administrators RDP /add
+        net localgroup "Remote Desktop Users" RDP /add
+        
+        net stop TermService
+        net start TermService
 
-    - name: Configure RDP Server
+    - name: Create Persistent Storage
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-        $ports = @(3389, 5555, 7777, 8888, 9999)
-        foreach ($port in $ports) {
-            netsh advfirewall firewall delete rule name="RDP-$port" 2>$null
-            netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
-        }
-        $password = "!QA2ws3ed"
-        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
-        New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-        Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-        Remove-Item "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
-        cmd.exe /c "mklink /J C:\Users\RDP\Desktop C:\PersistentData\Desktop" 2>$null
-        cmd.exe /c "mklink /J C:\Users\RDP\Documents C:\PersistentData\Documents" 2>$null
-        cmd.exe /c "mklink /J C:\Users\RDP\Downloads C:\PersistentData\Downloads" 2>$null
-        Restart-Service -Name TermService -Force
-        Write-Host "✅ RDP server configured"
+        mkdir C:\PersistentData
+        mkdir C:\PersistentData\Desktop
+        mkdir C:\PersistentData\Documents
+        mkdir C:\PersistentData\Downloads
+        
+        rmdir "C:\Users\RDP\Desktop" /s /q
+        rmdir "C:\Users\RDP\Documents" /s /q
+        rmdir "C:\Users\RDP\Downloads" /s /q
+        
+        mklink /J "C:\Users\RDP\Desktop" "C:\PersistentData\Desktop"
+        mklink /J "C:\Users\RDP\Documents" "C:\PersistentData\Documents"
+        mklink /J "C:\Users\RDP\Downloads" "C:\PersistentData\Downloads"
 
-    - name: Install Essential Software
+    - name: Install Software
       run: |
-        $software = @(
-            "Google.Chrome",
-            "Mozilla.Firefox",
-            "Microsoft.VisualStudioCode",
-            "Notepad++.Notepad++",
-            "7zip.7zip"
-        )
-        foreach ($app in $software) {
-            Write-Host "📦 Installing $app..."
-            winget install --id $app --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-        }
+        winget install --id Google.Chrome --silent --accept-package-agreements
+        winget install --id Mozilla.Firefox --silent --accept-package-agreements
+        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements
 
-    - name: Create Auto-Backup System
+    - name: Show Connection Info
       run: |
-        $backupScript = 'param($BackupPath = "C:\PersistentData")
-$backupItems = @(
-    "$BackupPath\Desktop\*",
-    "$BackupPath\Documents\*", 
-    "$BackupPath\Downloads\*",
-    "$BackupPath\Configs\*"
-)
-$backupFile = "$BackupPath\session-backup.zip"
-if (Test-Path $backupFile) { Remove-Item $backupFile }
-Compress-Archive -Path $backupItems -DestinationPath $backupFile -Force
-Write-Host "Backup created: $backupFile"
-return $backupFile'
-        $backupScript | Out-File "C:\PersistentData\auto-backup.ps1" -Encoding UTF8
-        Write-Host "✅ Auto-backup system created"
+        echo.
+        echo "================================================"
+        echo "🎯 PERMANENT RDP SERVER READY"
+        echo "================================================"
+        echo "🔗 HOSTNAME: $env:RDP_HOSTNAME"
+        echo "🌐 IP: $env:RDP_IP"
+        echo "👤 USERNAME: RDP"
+        echo "🔑 PASSWORD: !QA2ws3ed"
+        echo "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
+        echo "💾 STORAGE: C:\PersistentData\"
+        echo "================================================"
+        echo.
+        echo "💡 CONNECT USING:"
+        echo "mstsc /v:$env:RDP_HOSTNAME:3389"
+        echo.
+        echo "💡 ALTERNATIVE PORTS:"
+        echo "mstsc /v:$env:RDP_HOSTNAME:5555"
+        echo "mstsc /v:$env:RDP_HOSTNAME:7777"
+        echo "mstsc /v:$env:RDP_HOSTNAME:8888"
+        echo "mstsc /v:$env:RDP_HOSTNAME:9999"
+        echo.
+        echo "🔧 DIRECT IP:"
+        echo "mstsc /v:$env:RDP_IP:3389"
+        echo "================================================"
 
-    - name: Display Connection Information
+    - name: Keep Server Running
       run: |
-        Write-Host ""
-        Write-Host "🎯 PERMANENT RDP CONNECTION READY"
-        Write-Host "========================================"
-        Write-Host "🔗 PERMANENT HOSTNAME: $env:MAGIC_DNS"
-        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP"
-        Write-Host "👤 USERNAME: RDP"
-        Write-Host "🔑 PASSWORD: !QA2ws3ed"
-        Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
-        Write-Host "💾 STORAGE: C:\PersistentData\"
-        Write-Host "========================================"
-        Write-Host ""
-        Write-Host "💡 PERMANENT CONNECTION:"
-        Write-Host "mstsc /v:$env:MAGIC_DNS:3389"
-        Write-Host ""
-        Write-Host "💡 ALTERNATIVE PORTS:"
-        Write-Host "mstsc /v:$env:MAGIC_DNS:5555"
-        Write-Host "mstsc /v:$env:MAGIC_DNS:7777"
-        Write-Host "mstsc /v:$env:MAGIC_DNS:8888"
-        Write-Host "mstsc /v:$env:MAGIC_DNS:9999"
-        Write-Host ""
-        Write-Host "🔧 DIRECT IP:"
-        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389"
-        Write-Host "========================================"
-
-    - name: Run RDP Session
-      run: |
-        $sessionStart = Get-Date
-        $counter = 0
-        Write-Host "🔄 RDP Session started. Auto-backup every 10 minutes..."
-        while ($counter -lt 350) {
-            $elapsed = [math]::Round(((Get-Date) - $sessionStart).TotalMinutes, 1)
-            $remaining = 350 - $elapsed
-            if ($counter -gt 0 -and $counter % 10 -eq 0) {
-                Write-Host "💾 Auto-backup in progress..."
-                & "C:\PersistentData\auto-backup.ps1"
-            }
-            Write-Host "[$(Get-Date)] RDP Active - $env:MAGIC_DNS - Time left: ${remaining}m"
-            $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
-            $tailscaleService = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
-            if ($rdpService.Status -ne 'Running') {
-                Start-Service -Name "TermService" -ErrorAction SilentlyContinue
-            }
-            if ($tailscaleService.Status -ne 'Running') {
-                Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
-            }
+        $count = 0
+        while ($count -lt 350) {
+            $timeLeft = 350 - $count
+            echo "[$(Get-Date)] RDP Server Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
             Start-Sleep -Seconds 60
-            $counter++
+            $count++
         }
-        Write-Host "⏰ Session time completed"
-
-    - name: Final Backup
-      if: always()
-      run: |
-        Write-Host "📦 Creating final backup..."
-        & "C:\PersistentData\auto-backup.ps1"
-        Write-Host "✅ Final backup completed"
