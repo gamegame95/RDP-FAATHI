@@ -15,37 +15,27 @@ jobs:
     steps:
     - name: Install Tailscale
       run: |
-        # تثبيت Tailscale
         $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
         $installerPath = "$env:TEMP\tailscale.msi"
         Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
         Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
-        Write-Host "✅ Tailscale installed successfully" -ForegroundColor Green
+        Write-Host "✅ Tailscale installed"
 
-    - name: Configure Tailscale with Static Hostname
+    - name: Configure Tailscale
       run: |
-        # الاتصال بـ Tailscale مع اسم ثابت
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:STATIC_HOSTNAME --accept-routes --accept-dns
-        
-        # الانتظار للحصول على الاتصال
         Start-Sleep -Seconds 10
-        
-        # الحصول على معلومات الاتصال
         $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
         $tailscaleStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
         $magicDNS = $tailscaleStatus.Self.DNSName
-        
         echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
         echo "MAGIC_DNS=$magicDNS" >> $env:GITHUB_ENV
-        
-        Write-Host "🎯 Tailscale configured successfully" -ForegroundColor Green
-        Write-Host "🔗 MagicDNS: $magicDNS" -ForegroundColor Cyan
-        Write-Host "🌐 IP Address: $tailscaleIP" -ForegroundColor Cyan
+        Write-Host "🔗 MagicDNS: $magicDNS"
+        Write-Host "🌐 IP: $tailscaleIP"
 
     - name: Setup Persistent Environment
       run: |
-        # إنشاء مجلدات البيانات المستديمة
         $persistentDirs = @(
             "C:\PersistentData",
             "C:\PersistentData\Desktop",
@@ -53,52 +43,37 @@ jobs:
             "C:\PersistentData\Downloads",
             "C:\PersistentData\Configs"
         )
-        
         foreach ($dir in $persistentDirs) {
             New-Item -ItemType Directory -Path $dir -Force
         }
-        Write-Host "✅ Persistent environment setup completed" -ForegroundColor Green
+        Write-Host "✅ Persistent environment setup"
 
     - name: Configure RDP Server
       run: |
-        # تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-        
-        # فتح المنافذ
         $ports = @(3389, 5555, 7777, 8888, 9999)
         foreach ($port in $ports) {
             netsh advfirewall firewall delete rule name="RDP-$port" 2>$null
             netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
-            Write-Host "✅ Port $port opened" -ForegroundColor Green
         }
-        
-        # إنشاء المستخدم
         $password = "!QA2ws3ed"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        
-        # إزالة المستخدم إذا موجود وإنشاؤه جديد
         Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
         New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-        
-        # ربط المجلدات المستديمة
         Remove-Item "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
-        
         cmd.exe /c "mklink /J C:\Users\RDP\Desktop C:\PersistentData\Desktop" 2>$null
         cmd.exe /c "mklink /J C:\Users\RDP\Documents C:\PersistentData\Documents" 2>$null
         cmd.exe /c "mklink /J C:\Users\RDP\Downloads C:\PersistentData\Downloads" 2>$null
-        
-        # إعادة تشغيل الخدمة
         Restart-Service -Name TermService -Force
-        Write-Host "✅ RDP server configured successfully" -ForegroundColor Green
+        Write-Host "✅ RDP server configured"
 
     - name: Install Essential Software
       run: |
-        # تثبيت البرامج الأساسية
         $software = @(
             "Google.Chrome",
             "Mozilla.Firefox",
@@ -106,117 +81,83 @@ jobs:
             "Notepad++.Notepad++",
             "7zip.7zip"
         )
-        
         foreach ($app in $software) {
-            Write-Host "📦 Installing $app..." -ForegroundColor Yellow
+            Write-Host "📦 Installing $app..."
             winget install --id $app --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "✅ $app installed successfully" -ForegroundColor Green
-            } else {
-                Write-Host "⚠️  Failed to install $app" -ForegroundColor Yellow
-            }
         }
 
     - name: Create Auto-Backup System
       run: |
-        # إنشاء سكريبت النسخ الاحتياطي
-        $backupScript = '
-# Auto Backup Script
-$BackupPath = "C:\PersistentData"
+        $backupScript = 'param($BackupPath = "C:\PersistentData")
 $backupItems = @(
     "$BackupPath\Desktop\*",
     "$BackupPath\Documents\*", 
     "$BackupPath\Downloads\*",
     "$BackupPath\Configs\*"
 )
-
 $backupFile = "$BackupPath\session-backup.zip"
 if (Test-Path $backupFile) { Remove-Item $backupFile }
-
-try {
-    Compress-Archive -Path $backupItems -DestinationPath $backupFile -Force -ErrorAction Stop
-    Write-Host "Backup created successfully: $backupFile" -ForegroundColor Green
-} catch {
-    Write-Host "Backup failed: $_" -ForegroundColor Red
-}
-
-return $backupFile
-'
+Compress-Archive -Path $backupItems -DestinationPath $backupFile -Force
+Write-Host "Backup created: $backupFile"
+return $backupFile'
         $backupScript | Out-File "C:\PersistentData\auto-backup.ps1" -Encoding UTF8
-        Write-Host "✅ Auto-backup system created" -ForegroundColor Green
+        Write-Host "✅ Auto-backup system created"
 
-    - name: Display Permanent Connection Information
+    - name: Display Connection Information
       run: |
         Write-Host ""
-        Write-Host "🎯🎯🎯 PERMANENT RDP CONNECTION READY 🎯🎯🎯" -ForegroundColor Green
-        Write-Host "==================================================" -ForegroundColor Yellow
-        Write-Host "🔗 PERMANENT HOSTNAME: $env:MAGIC_DNS" -ForegroundColor Cyan
-        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
-        Write-Host "👤 USERNAME: RDP" -ForegroundColor White
-        Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
-        Write-Host "🚪 AVAILABLE PORTS: 3389, 5555, 7777, 8888, 9999" -ForegroundColor White
-        Write-Host "💾 PERSISTENT STORAGE: C:\PersistentData\" -ForegroundColor Green
-        Write-Host "⏰ SESSION DURATION: 6 hours" -ForegroundColor Yellow
-        Write-Host "==================================================" -ForegroundColor Yellow
+        Write-Host "🎯 PERMANENT RDP CONNECTION READY"
+        Write-Host "========================================"
+        Write-Host "🔗 PERMANENT HOSTNAME: $env:MAGIC_DNS"
+        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP"
+        Write-Host "👤 USERNAME: RDP"
+        Write-Host "🔑 PASSWORD: !QA2ws3ed"
+        Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
+        Write-Host "💾 STORAGE: C:\PersistentData\"
+        Write-Host "========================================"
         Write-Host ""
-        Write-Host "💡 PERMANENT CONNECTION COMMAND:" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:MAGIC_DNS:3389" -ForegroundColor White
+        Write-Host "💡 PERMANENT CONNECTION:"
+        Write-Host "mstsc /v:$env:MAGIC_DNS:3389"
         Write-Host ""
-        Write-Host "💡 ALTERNATIVE CONNECTIONS:" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:MAGIC_DNS:5555" -ForegroundColor White
-        Write-Host "mstsc /v:$env:MAGIC_DNS:7777" -ForegroundColor White
-        Write-Host "mstsc /v:$env:MAGIC_DNS:8888" -ForegroundColor White
-        Write-Host "mstsc /v:$env:MAGIC_DNS:9999" -ForegroundColor White
+        Write-Host "💡 ALTERNATIVE PORTS:"
+        Write-Host "mstsc /v:$env:MAGIC_DNS:5555"
+        Write-Host "mstsc /v:$env:MAGIC_DNS:7777"
+        Write-Host "mstsc /v:$env:MAGIC_DNS:8888"
+        Write-Host "mstsc /v:$env:MAGIC_DNS:9999"
         Write-Host ""
-        Write-Host "🔧 USING IP DIRECTLY:" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
-        Write-Host "==================================================" -ForegroundColor Yellow
-        Write-Host ""
+        Write-Host "🔧 DIRECT IP:"
+        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389"
+        Write-Host "========================================"
 
-    - name: Run RDP Session with Monitoring
+    - name: Run RDP Session
       run: |
         $sessionStart = Get-Date
-        $backupInterval = 10 # دقائق بين كل نسخ احتياطي
         $counter = 0
-        
-        Write-Host "🔄 RDP Session started. Auto-backup every $backupInterval minutes..." -ForegroundColor Cyan
-        
+        Write-Host "🔄 RDP Session started. Auto-backup every 10 minutes..."
         while ($counter -lt 350) {
             $elapsed = [math]::Round(((Get-Date) - $sessionStart).TotalMinutes, 1)
             $remaining = 350 - $elapsed
-            
-            # نسخ احتياطي تلقائي
-            if ($counter -gt 0 -and $counter % $backupInterval -eq 0) {
-                Write-Host "💾 Auto-backup in progress..." -ForegroundColor Yellow
+            if ($counter -gt 0 -and $counter % 10 -eq 0) {
+                Write-Host "💾 Auto-backup in progress..."
                 & "C:\PersistentData\auto-backup.ps1"
             }
-            
-            # عرض حالة الخادم
-            Write-Host "[$(Get-Date)] RDP Active - Hostname: $env:MAGIC_DNS - Time left: ${remaining}m" -ForegroundColor Green
-            
-            # فحص خدمات RDP
+            Write-Host "[$(Get-Date)] RDP Active - $env:MAGIC_DNS - Time left: ${remaining}m"
             $rdpService = Get-Service -Name "TermService" -ErrorAction SilentlyContinue
             $tailscaleService = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
-            
             if ($rdpService.Status -ne 'Running') {
-                Write-Host "⚠️  RDP service not running - restarting..." -ForegroundColor Red
                 Start-Service -Name "TermService" -ErrorAction SilentlyContinue
             }
-            
             if ($tailscaleService.Status -ne 'Running') {
-                Write-Host "⚠️  Tailscale service not running - restarting..." -ForegroundColor Red
                 Start-Service -Name "Tailscale" -ErrorAction SilentlyContinue
             }
-            
             Start-Sleep -Seconds 60
             $counter++
         }
-        
-        Write-Host "⏰ Session time completed. Shutting down..." -ForegroundColor Yellow
+        Write-Host "⏰ Session time completed"
 
-    - name: Create Final Backup
+    - name: Final Backup
       if: always()
       run: |
-        Write-Host "📦 Creating final backup before shutdown..." -ForegroundColor Yellow
+        Write-Host "📦 Creating final backup..."
         & "C:\PersistentData\auto-backup.ps1"
-        Write-Host "✅ Final backup completed. Ready for next session!" -ForegroundColor Green
+        Write-Host "✅ Final backup completed"
