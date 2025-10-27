@@ -37,73 +37,73 @@ jobs:
         netsh advfirewall firewall add rule name="RDP-8888" dir=in action=allow protocol=TCP localport=8888
         netsh advfirewall firewall add rule name="RDP-9999" dir=in action=allow protocol=TCP localport=9999
         
-        # إنشاء المستخدم بدون كلمة مرور معقدة
+        # إنشاء المستخدم
         net user RDP "Password123!" /add /y
         net localgroup administrators RDP /add
         net localgroup "Remote Desktop Users" RDP /add
         
-        # إعادة تشغيل خدمة RDP بدون طلب تأكيد
+        # إعادة تشغيل خدمة RDP
         Stop-Service -Name "TermService" -Force
         Start-Service -Name "TermService"
 
     - name: Create Persistent Storage
       run: |
         # إنشاء المجلدات المستديمة
-        mkdir C:\PersistentData 2>null
-        mkdir C:\PersistentData\Desktop 2>null
-        mkdir C:\PersistentData\Documents 2>null
-        mkdir C:\PersistentData\Downloads 2>null
+        New-Item -ItemType Directory -Path "C:\PersistentData" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Desktop" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Documents" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Downloads" -Force
         
-        # حذف المجلدات الافتراضية إذا موجودة
-        rmdir "C:\Users\RDP\Desktop" /s /q 2>null
-        rmdir "C:\Users\RDP\Documents" /s /q 2>null
-        rmdir "C:\Users\RDP\Downloads" /s /q 2>null
+        # حذف المجلدات الافتراضية إذا موجودة (باستخدام PowerShell)
+        Remove-Item -Path "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
         
-        # إنشاء روابط رمزية
-        mklink /J "C:\Users\RDP\Desktop" "C:\PersistentData\Desktop" 2>null
-        mklink /J "C:\Users\RDP\Documents" "C:\PersistentData\Documents" 2>null
-        mklink /J "C:\Users\RDP\Downloads" "C:\PersistentData\Downloads" 2>null
+        # إنشاء روابط رمزية باستخدام cmd
+        cmd /c "mklink /J `"C:\Users\RDP\Desktop`" `"C:\PersistentData\Desktop`""
+        cmd /c "mklink /J `"C:\Users\RDP\Documents`" `"C:\PersistentData\Documents`""
+        cmd /c "mklink /J `"C:\Users\RDP\Downloads`" `"C:\PersistentData\Downloads`""
 
     - name: Install Software
       run: |
         # تثبيت البرامج الأساسية
-        winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements 2>null
-        winget install --id Mozilla.Firefox --silent --accept-package-agreements --accept-source-agreements 2>null
-        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements 2>null
+        winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements
+        winget install --id Mozilla.Firefox --silent --accept-package-agreements --accept-source-agreements
+        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements
 
     - name: Show Connection Info
       run: |
-        echo.
-        echo "================================================"
-        echo "🎯 PERMANENT RDP SERVER READY"
-        echo "================================================"
-        echo "🔗 HOSTNAME: $env:RDP_HOSTNAME"
-        echo "🌐 IP: $env:RDP_IP"
-        echo "👤 USERNAME: RDP"
-        echo "🔑 PASSWORD: Password123!"
-        echo "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
-        echo "💾 STORAGE: C:\PersistentData\"
-        echo "================================================"
-        echo.
-        echo "💡 CONNECT USING:"
-        echo "mstsc /v:$env:RDP_HOSTNAME:3389"
-        echo.
-        echo "💡 ALTERNATIVE PORTS:"
-        echo "mstsc /v:$env:RDP_HOSTNAME:5555"
-        echo "mstsc /v:$env:RDP_HOSTNAME:7777"
-        echo "mstsc /v:$env:RDP_HOSTNAME:8888"
-        echo "mstsc /v:$env:RDP_HOSTNAME:9999"
-        echo.
-        echo "🔧 DIRECT IP:"
-        echo "mstsc /v:$env:RDP_IP:3389"
-        echo "================================================"
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "🎯 PERMANENT RDP SERVER READY"
+        Write-Host "================================================"
+        Write-Host "🔗 HOSTNAME: $env:RDP_HOSTNAME"
+        Write-Host "🌐 IP: $env:RDP_IP"
+        Write-Host "👤 USERNAME: RDP"
+        Write-Host "🔑 PASSWORD: Password123!"
+        Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
+        Write-Host "💾 STORAGE: C:\PersistentData\"
+        Write-Host "================================================"
+        Write-Host ""
+        Write-Host "💡 CONNECT USING:"
+        Write-Host "mstsc /v:$env:RDP_HOSTNAME:3389"
+        Write-Host ""
+        Write-Host "💡 ALTERNATIVE PORTS:"
+        Write-Host "mstsc /v:$env:RDP_HOSTNAME:5555"
+        Write-Host "mstsc /v:$env:RDP_HOSTNAME:7777"
+        Write-Host "mstsc /v:$env:RDP_HOSTNAME:8888"
+        Write-Host "mstsc /v:$env:RDP_HOSTNAME:9999"
+        Write-Host ""
+        Write-Host "🔧 DIRECT IP:"
+        Write-Host "mstsc /v:$env:RDP_IP:3389"
+        Write-Host "================================================"
 
     - name: Keep Server Running
       run: |
         $count = 0
         while ($count -lt 350) {
             $timeLeft = 350 - $count
-            echo "[$(Get-Date)] RDP Server Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
+            Write-Host "[$(Get-Date)] RDP Server Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
             Start-Sleep -Seconds 60
             $count++
         }
