@@ -24,7 +24,16 @@ jobs:
         echo "RDP_IP=$ip" >> $env:GITHUB_ENV
         echo "RDP_HOSTNAME=$hostname" >> $env:GITHUB_ENV
 
-    - name: Configure Windows RDP
+    - name: Create Persistent Storage First
+      run: |
+        # إنشاء المجلدات المستديمة أولاً
+        New-Item -ItemType Directory -Path "C:\PersistentData" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Desktop" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Documents" -Force
+        New-Item -ItemType Directory -Path "C:\PersistentData\Downloads" -Force
+        Write-Host "✅ Persistent storage created"
+
+    - name: Configure Windows RDP and User
       run: |
         # تفعيل RDP في الريجستري
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
@@ -37,32 +46,44 @@ jobs:
         netsh advfirewall firewall add rule name="RDP-8888" dir=in action=allow protocol=TCP localport=8888
         netsh advfirewall firewall add rule name="RDP-9999" dir=in action=allow protocol=TCP localport=9999
         
-        # إنشاء المستخدم
+        # إنشاء المستخدم RDP
         net user RDP "Password123!" /add /y
         net localgroup administrators RDP /add
         net localgroup "Remote Desktop Users" RDP /add
-        
-        # إعادة تشغيل خدمة RDP
-        Stop-Service -Name "TermService" -Force
-        Start-Service -Name "TermService"
+        Write-Host "✅ User RDP created"
 
-    - name: Create Persistent Storage
+    - name: Setup User Profile and Links
       run: |
-        # إنشاء المجلدات المستديمة
-        New-Item -ItemType Directory -Path "C:\PersistentData" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Desktop" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Documents" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Downloads" -Force
+        # الانتظار حتى ينشئ النظام مجلدات المستخدم
+        Start-Sleep -Seconds 5
         
-        # حذف المجلدات الافتراضية إذا موجودة (باستخدام PowerShell)
+        # إنشاء مجلدات المستخدم إذا لم تكن موجودة
+        New-Item -ItemType Directory -Path "C:\Users\RDP\Desktop" -Force
+        New-Item -ItemType Directory -Path "C:\Users\RDP\Documents" -Force
+        New-Item -ItemType Directory -Path "C:\Users\RDP\Downloads" -Force
+        
+        # نسخ المحتوى من المجلدات المؤقتة إلى المستديمة (إذا كان هناك محتوى)
+        Copy-Item -Path "C:\Users\RDP\Desktop\*" -Destination "C:\PersistentData\Desktop\" -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "C:\Users\RDP\Documents\*" -Destination "C:\PersistentData\Documents\" -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item -Path "C:\Users\RDP\Downloads\*" -Destination "C:\PersistentData\Downloads\" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        # حذف المجلدات الأصلية واستبدالها بروابط
         Remove-Item -Path "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
         
-        # إنشاء روابط رمزية باستخدام cmd
+        # إنشاء روابط رمزية
         cmd /c "mklink /J `"C:\Users\RDP\Desktop`" `"C:\PersistentData\Desktop`""
         cmd /c "mklink /J `"C:\Users\RDP\Documents`" `"C:\PersistentData\Documents`""
         cmd /c "mklink /J `"C:\Users\RDP\Downloads`" `"C:\PersistentData\Downloads`""
+        Write-Host "✅ User profile links created"
+
+    - name: Start RDP Services
+      run: |
+        # إعادة تشغيل خدمة RDP
+        Stop-Service -Name "TermService" -Force
+        Start-Service -Name "TermService"
+        Write-Host "✅ RDP services started"
 
     - name: Install Software
       run: |
@@ -70,6 +91,7 @@ jobs:
         winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements
         winget install --id Mozilla.Firefox --silent --accept-package-agreements --accept-source-agreements
         winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements
+        Write-Host "✅ Software installed"
 
     - name: Show Connection Info
       run: |
@@ -82,7 +104,8 @@ jobs:
         Write-Host "👤 USERNAME: RDP"
         Write-Host "🔑 PASSWORD: Password123!"
         Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
-        Write-Host "💾 STORAGE: C:\PersistentData\"
+        Write-Host "💾 PERSISTENT STORAGE: C:\PersistentData\"
+        Write-Host "🔄 NEW SESSION: All data will be saved"
         Write-Host "================================================"
         Write-Host ""
         Write-Host "💡 CONNECT USING:"
@@ -101,9 +124,12 @@ jobs:
     - name: Keep Server Running
       run: |
         $count = 0
+        Write-Host "🔄 RDP Server started successfully!"
+        Write-Host "📡 Waiting for connections..."
         while ($count -lt 350) {
             $timeLeft = 350 - $count
-            Write-Host "[$(Get-Date)] RDP Server Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
+            Write-Host "[$(Get-Date)] RDP Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
             Start-Sleep -Seconds 60
             $count++
         }
+        Write-Host "⏰ Session completed - All data saved in C:\PersistentData\"
