@@ -1,0 +1,77 @@
+name: RDP with Stable Hostname
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-server:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Install Tailscale
+      run: |
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+        Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
+        Start-Sleep -Seconds 10
+
+    - name: Configure Tailscale with Stable Hostname
+      run: |
+        # Use a consistent hostname
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-rdp-server --accept-routes
+        
+        # Get hostname and IP
+        $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $tailscaleHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
+        
+        echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
+        echo "TAILSCALE_HOSTNAME=$tailscaleHostname" >> $env:GITHUB_ENV
+        echo "Stable Hostname: $tailscaleHostname"
+        echo "Current IP: $tailscaleIP"
+
+    - name: Configure RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+        
+        $ports = @(3389, 5555, 7777, 8888, 9999)
+        foreach ($port in $ports) {
+            netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
+        }
+        
+        $password = "!QA2ws3ed"
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+        New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+        
+        Restart-Service -Name TermService -Force
+
+    - name: Display Stable Connection Info
+      run: |
+        Write-Host ""
+        Write-Host "🎯 STABLE RDP CONNECTION" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host "🔗 HOSTNAME: $env:TAILSCALE_HOSTNAME" -ForegroundColor Cyan
+        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+        Write-Host "👤 USERNAME: RDP" -ForegroundColor White
+        Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "💡 CONNECT USING HOSTNAME (RECOMMENDED):" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_HOSTNAME:3389" -ForegroundColor White
+        Write-Host ""
+        Write-Host "💡 OR USING CURRENT IP:" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+
+    - name: Keep Server Alive
+      run: |
+        $counter = 0
+        while ($counter -lt 350) {
+            Write-Host "[$(Get-Date)] RDP: $env:TAILSCALE_HOSTNAME ($env:TAILSCALE_IP) - Time: ${counter}m" -ForegroundColor Green
+            Start-Sleep -Seconds 60
+            $counter++
+        }
