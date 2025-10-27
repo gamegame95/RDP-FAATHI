@@ -1,4 +1,4 @@
-name: RDP with Stable Hostname
+name: RDP with Fixed Hostname
 
 on:
   workflow_dispatch:
@@ -17,19 +17,20 @@ jobs:
         Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
 
-    - name: Configure Tailscale with Stable Hostname
+    - name: Configure Tailscale with FIXED Hostname
       run: |
-        # Use a consistent hostname
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-rdp-server --accept-routes
+        # استخدام اسم مضيف ثابت تماماً
+        $fixedHostname = "my-permanent-rdp"
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$fixedHostname --accept-routes
         
-        # Get hostname and IP
+        # الانتظار للحصول على IP
+        Start-Sleep -Seconds 10
         $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-        $tailscaleHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
+        $fullHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
         
         echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
-        echo "TAILSCALE_HOSTNAME=$tailscaleHostname" >> $env:GITHUB_ENV
-        echo "Stable Hostname: $tailscaleHostname"
-        echo "Current IP: $tailscaleIP"
+        echo "FIXED_HOSTNAME=$fixedHostname" >> $env:GITHUB_ENV
+        echo "FULL_HOSTNAME=$fullHostname" >> $env:GITHUB_ENV
 
     - name: Configure RDP
       run: |
@@ -49,29 +50,17 @@ jobs:
         
         Restart-Service -Name TermService -Force
 
-    - name: Display Stable Connection Info
+    - name: Display Permanent Connection Info
       run: |
         Write-Host ""
-        Write-Host "🎯 STABLE RDP CONNECTION" -ForegroundColor Green
+        Write-Host "🎯 PERMANENT RDP CONNECTION" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Yellow
-        Write-Host "🔗 HOSTNAME: $env:TAILSCALE_HOSTNAME" -ForegroundColor Cyan
+        Write-Host "🔗 FIXED HOSTNAME: $env:FIXED_HOSTNAME" -ForegroundColor Cyan
         Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
         Write-Host "👤 USERNAME: RDP" -ForegroundColor White
         Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
         Write-Host "========================================" -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "💡 CONNECT USING HOSTNAME (RECOMMENDED):" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:TAILSCALE_HOSTNAME:3389" -ForegroundColor White
-        Write-Host ""
-        Write-Host "💡 OR USING CURRENT IP:" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
+        Write-Host "💡 ALWAYS USE THIS HOSTNAME:" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:FIXED_HOSTNAME:3389" -ForegroundColor White
         Write-Host "========================================" -ForegroundColor Yellow
-
-    - name: Keep Server Alive
-      run: |
-        $counter = 0
-        while ($counter -lt 350) {
-            Write-Host "[$(Get-Date)] RDP: $env:TAILSCALE_HOSTNAME ($env:TAILSCALE_IP) - Time: ${counter}m" -ForegroundColor Green
-            Start-Sleep -Seconds 60
-            $counter++
-        }
