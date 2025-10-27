@@ -26,42 +26,50 @@ jobs:
 
     - name: Configure Windows RDP
       run: |
+        # تفعيل RDP في الريجستري
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
         reg add "HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 0 /f
         
+        # فتح المنافذ في الجدار الناري
         netsh advfirewall firewall add rule name="RDP-3389" dir=in action=allow protocol=TCP localport=3389
         netsh advfirewall firewall add rule name="RDP-5555" dir=in action=allow protocol=TCP localport=5555
         netsh advfirewall firewall add rule name="RDP-7777" dir=in action=allow protocol=TCP localport=7777
         netsh advfirewall firewall add rule name="RDP-8888" dir=in action=allow protocol=TCP localport=8888
         netsh advfirewall firewall add rule name="RDP-9999" dir=in action=allow protocol=TCP localport=9999
         
-        net user RDP "!QA2ws3ed" /add /y
+        # إنشاء المستخدم بدون كلمة مرور معقدة
+        net user RDP "Password123!" /add /y
         net localgroup administrators RDP /add
         net localgroup "Remote Desktop Users" RDP /add
         
-        net stop TermService
-        net start TermService
+        # إعادة تشغيل خدمة RDP بدون طلب تأكيد
+        Stop-Service -Name "TermService" -Force
+        Start-Service -Name "TermService"
 
     - name: Create Persistent Storage
       run: |
-        mkdir C:\PersistentData
-        mkdir C:\PersistentData\Desktop
-        mkdir C:\PersistentData\Documents
-        mkdir C:\PersistentData\Downloads
+        # إنشاء المجلدات المستديمة
+        mkdir C:\PersistentData 2>null
+        mkdir C:\PersistentData\Desktop 2>null
+        mkdir C:\PersistentData\Documents 2>null
+        mkdir C:\PersistentData\Downloads 2>null
         
-        rmdir "C:\Users\RDP\Desktop" /s /q
-        rmdir "C:\Users\RDP\Documents" /s /q
-        rmdir "C:\Users\RDP\Downloads" /s /q
+        # حذف المجلدات الافتراضية إذا موجودة
+        rmdir "C:\Users\RDP\Desktop" /s /q 2>null
+        rmdir "C:\Users\RDP\Documents" /s /q 2>null
+        rmdir "C:\Users\RDP\Downloads" /s /q 2>null
         
-        mklink /J "C:\Users\RDP\Desktop" "C:\PersistentData\Desktop"
-        mklink /J "C:\Users\RDP\Documents" "C:\PersistentData\Documents"
-        mklink /J "C:\Users\RDP\Downloads" "C:\PersistentData\Downloads"
+        # إنشاء روابط رمزية
+        mklink /J "C:\Users\RDP\Desktop" "C:\PersistentData\Desktop" 2>null
+        mklink /J "C:\Users\RDP\Documents" "C:\PersistentData\Documents" 2>null
+        mklink /J "C:\Users\RDP\Downloads" "C:\PersistentData\Downloads" 2>null
 
     - name: Install Software
       run: |
-        winget install --id Google.Chrome --silent --accept-package-agreements
-        winget install --id Mozilla.Firefox --silent --accept-package-agreements
-        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements
+        # تثبيت البرامج الأساسية
+        winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements 2>null
+        winget install --id Mozilla.Firefox --silent --accept-package-agreements --accept-source-agreements 2>null
+        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements 2>null
 
     - name: Show Connection Info
       run: |
@@ -72,7 +80,7 @@ jobs:
         echo "🔗 HOSTNAME: $env:RDP_HOSTNAME"
         echo "🌐 IP: $env:RDP_IP"
         echo "👤 USERNAME: RDP"
-        echo "🔑 PASSWORD: !QA2ws3ed"
+        echo "🔑 PASSWORD: Password123!"
         echo "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
         echo "💾 STORAGE: C:\PersistentData\"
         echo "================================================"
