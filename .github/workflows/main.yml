@@ -1,11 +1,11 @@
-name: RDP with Persistent Storage
+name: Persistent RDP with GitHub Storage
 
 on:
   workflow_dispatch:
 
 env:
   PERSISTENT_HOSTNAME: "my-permanent-rdp"
-  CONFIG_VERSION: "v2"
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   rdp-server:
@@ -13,9 +13,12 @@ jobs:
     timeout-minutes: 360
 
     steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
     - name: Setup Persistent Environment
       run: |
-        # إنشاء مجلدات للبيانات المستديمة
+        # إنشاء مجلدات البيانات المستديمة
         $persistentDirs = @(
             "C:\PersistentData",
             "C:\PersistentData\Desktop",
@@ -31,18 +34,27 @@ jobs:
         
         echo "PERSISTENT_ROOT=C:\PersistentData" >> $env:GITHUB_ENV
 
-    - name: Download Previous Session Data
+    - name: Download Previous Session from GitHub Releases
       run: |
-        # محاولة تحميل البيانات من الجلسة السابقة
-        Write-Host "🔄 Checking for previous session data..." -ForegroundColor Yellow
-        if (Test-Path "C:\PersistentData\session-backup.zip") {
-            Expand-Archive -Path "C:\PersistentData\session-backup.zip" -DestinationPath "C:\PersistentData\" -Force
-            Write-Host "✅ Previous session data restored" -ForegroundColor Green
-        } else {
-            Write-Host "ℹ️ No previous data found, starting fresh session" -ForegroundColor Cyan
+        Write-Host "🔄 Downloading previous session data from GitHub Releases..." -ForegroundColor Yellow
+        
+        # محاولة تحميل النسخة الاحتياطية الأخيرة
+        $releaseUrl = "https://github.com/${{ github.repository }}/releases/latest/download/session-backup.zip"
+        try {
+            Invoke-WebRequest -Uri $releaseUrl -OutFile "$env:TEMP\session-backup.zip" -TimeoutSec 30
+            Expand-Archive -Path "$env:TEMP\session-backup.zip" -DestinationPath "C:\PersistentData\" -Force
+            Write-Host "✅ Previous session data restored from GitHub Releases" -ForegroundColor Green
+            
+            # استعادة إعدادات النظام
+            if (Test-Path "C:\PersistentData\Configs\system-settings.reg") {
+                reg import "C:\PersistentData\Configs\system-settings.reg" 2>$null
+                Write-Host "✅ System settings restored" -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "ℹ️ No previous backup found, starting fresh session" -ForegroundColor Cyan
         }
 
-    - name: Install Tailscale
+    - name: Install Tailscale with Name Reservation
       run: |
         # تثبيت Tailscale
         $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
@@ -51,7 +63,7 @@ jobs:
         Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
 
-        # الاتصال مع اسم مضيف ثابت
+        # محاولة استخدام نفس الاسم
         & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:PERSISTENT_HOSTNAME --accept-routes
         Start-Sleep -Seconds 10
         
@@ -61,7 +73,17 @@ jobs:
         echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
         echo "FULL_HOSTNAME=$fullHostname" >> $env:GITHUB_ENV
 
-    - name: Configure RDP
+        # حفظ معلومات الاتصال
+        $connectionInfo = @{
+            hostname = $fullHostname
+            ip = $tailscaleIP
+            timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            session_id = "${{ github.run_id }}"
+        }
+        
+        $connectionInfo | ConvertTo-Json | Out-File "C:\PersistentData\Configs\connection-info.json"
+
+    - name: Configure RDP with Persistent Links
       run: |
         # تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -76,111 +98,148 @@ jobs:
         # إنشاء المستخدم
         $password = "!QA2ws3ed"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        
-        # حذف المستخدم إذا موجود وإنشاؤه جديد
         Remove-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
         New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
         Add-LocalGroupMember -Group "Administrators" -Member "RDP"
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
         
-        # ربط المجلدات المستديمة بالمستخدم
+        # ربط المجلدات المستديمة
+        Remove-Item "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
+        
         cmd.exe /c "mklink /J C:\Users\RDP\Desktop C:\PersistentData\Desktop" 2>$null
         cmd.exe /c "mklink /J C:\Users\RDP\Documents C:\PersistentData\Documents" 2>$null
         cmd.exe /c "mklink /J C:\Users\RDP\Downloads C:\PersistentData\Downloads" 2>$null
         
         Restart-Service -Name TermService -Force
 
-    - name: Install Persistent Software
+    - name: Install and Cache Software
       run: |
-        # قائمة البرامج الأساسية
-        $essentialSoftware = @(
-            "Google.Chrome",
-            "Mozilla.Firefox",
-            "Microsoft.VisualStudioCode",
-            "Notepad++.Notepad++",
-            "7zip.7zip"
+        # قائمة البرامج مع التحقق من التثبيت السابق
+        $softwareList = @(
+            @{Id="Google.Chrome"; Name="Chrome"},
+            @{Id="Mozilla.Firefox"; Name="Firefox"},
+            @{Id="Microsoft.VisualStudioCode"; Name="VSCode"},
+            @{Id="Notepad++.Notepad++"; Name="Notepad++"},
+            @{Id="7zip.7zip"; Name="7-Zip"}
         )
         
-        # تثبيت البرامج
-        foreach ($app in $essentialSoftware) {
-            Write-Host "📦 Installing $app..." -ForegroundColor Yellow
-            winget install --id $app --silent --accept-package-agreements --accept-source-agreements
+        foreach ($app in $softwareList) {
+            $cacheFile = "C:\PersistentData\Configs\$($app.Name)-installed.txt"
+            
+            if (Test-Path $cacheFile) {
+                Write-Host "✅ $($app.Name) - Already installed (from cache)" -ForegroundColor Green
+            } else {
+                Write-Host "📦 Installing $($app.Name)..." -ForegroundColor Yellow
+                winget install --id $app.Id --silent --accept-package-agreements --accept-source-agreements
+                if ($LASTEXITCODE -eq 0) {
+                    "Installed on $(Get-Date)" | Out-File $cacheFile
+                    Write-Host "✅ $($app.Name) installed successfully" -ForegroundColor Green
+                }
+            }
         }
-        
-        # حفظ قائمة البرامج المثبتة
-        winget list > "C:\PersistentData\Configs\installed-software.txt"
 
-    - name: Configure System Settings
+    - name: Create Backup and Restore System
       run: |
-        # إنشاء ملف إعدادات النظام بدون استخدام here-string
-        $regContent = 'Windows Registry Editor Version 5.00\n\n[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer]\n"ShowSuperHidden"="1"\n\n[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced]\n"Hidden"="1"\n"ShowCompColor"="1"\n"HideFileExt"="0"'
-        $regContent | Out-File "C:\PersistentData\Configs\system-settings.reg"
-        reg import "C:\PersistentData\Configs\system-settings.reg" 2>$null
+        # سكريبت النسخ الاحتياطي التلقائي
+        $backupScript = @'
+# Auto Backup Script
+param($BackupPath = "C:\PersistentData")
 
-    - name: Create Auto-Save Script
-      run: |
-        # إنشاء سكريبت للحفظ التلقائي بدون here-string
-        $autoSaveContent = @'
-`$sessionData = @{
+$sessionInfo = @{
     Timestamp = Get-Date
-    Hostname = `$env:COMPUTERNAME
-    InstalledSoftware = winget list
+    Hostname = $env:COMPUTERNAME
+    User = $env:USERNAME
+    SessionId = "${{ github.run_id }}"
 }
 
-`$sessionData | ConvertTo-Json | Out-File "C:\PersistentData\session-info.json"
+# حفظ معلومات الجلسة
+$sessionInfo | ConvertTo-Json | Out-File "$BackupPath\Configs\session-info.json"
 
-`$importantPaths = @(
-    "C:\Users\RDP\Desktop\*",
-    "C:\Users\RDP\Documents\*", 
-    "C:\Users\RDP\Downloads\*",
-    "C:\PersistentData\Configs\*"
+# نسخ الملفات المهمة
+$backupItems = @(
+    "$BackupPath\Desktop\*",
+    "$BackupPath\Documents\*", 
+    "$BackupPath\Downloads\*",
+    "$BackupPath\Configs\*"
 )
 
-Compress-Archive -Path `$importantPaths -DestinationPath "C:\PersistentData\session-backup.zip" -Force
-'@
-        $autoSaveContent | Out-File "C:\PersistentData\auto-save.ps1" -Encoding UTF8
+# إنشاء نسخة احتياطية
+$backupFile = "$BackupPath\session-backup.zip"
+if (Test-Path $backupFile) { Remove-Item $backupFile }
+Compress-Archive -Path $backupItems -DestinationPath $backupFile -Force
 
-    - name: Display Connection Information
+Write-Host "✅ Backup created: $backupFile" -ForegroundColor Green
+return $backupFile
+'@
+        
+        $backupScript | Out-File "C:\PersistentData\Configs\auto-backup.ps1" -Encoding UTF8
+
+    - name: Display Persistent Connection Info
       run: |
+        $connectionInfo = Get-Content "C:\PersistentData\Configs\connection-info.json" | ConvertFrom-Json -ErrorAction SilentlyContinue
+        
         Write-Host ""
         Write-Host "🎯 PERSISTENT RDP SESSION READY" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Yellow
-        Write-Host "🔗 HOSTNAME: $env:FULL_HOSTNAME" -ForegroundColor Cyan
-        Write-Host "🌐 DIRECT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+        Write-Host "🔗 HOSTNAME: $($connectionInfo.hostname)" -ForegroundColor Cyan
+        Write-Host "🌐 DIRECT IP: $($connectionInfo.ip)" -ForegroundColor Cyan
         Write-Host "👤 USERNAME: RDP" -ForegroundColor White
         Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
         Write-Host "💾 PERSISTENT STORAGE: ENABLED" -ForegroundColor Green
+        Write-Host "📁 DATA SAVED: C:\PersistentData\" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "💡 CONNECT USING:" -ForegroundColor Magenta
-        Write-Host "mstsc /v:$env:FULL_HOSTNAME:3389" -ForegroundColor White
-        Write-Host "mstsc /v:$env:TAILSCALE_IP:5555" -ForegroundColor White
+        Write-Host "mstsc /v:$($connectionInfo.hostname):3389" -ForegroundColor White
+        Write-Host "mstsc /v:$($connectionInfo.ip):5555" -ForegroundColor White
         Write-Host ""
-        Write-Host "📁 Your files are saved in C:\PersistentData\" -ForegroundColor Cyan
+        Write-Host "🔄 Changes will be saved to GitHub Releases" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Yellow
 
-    - name: Run Session with Auto-Save
+    - name: Run Session with Auto-Backup
       run: |
         $sessionStart = Get-Date
-        $checkpointInterval = 300
+        $backupInterval = 10 # دقائق بين كل نسخ احتياطي
         
         while (((Get-Date) - $sessionStart).TotalMinutes -lt 350) {
             $elapsed = [math]::Round(((Get-Date) - $sessionStart).TotalMinutes, 1)
             $remaining = 350 - $elapsed
             
-            # حفظ تلقائي كل 5 دقائق
-            if ([math]::Round($elapsed * 60) % $checkpointInterval -eq 0) {
-                Write-Host "💾 Auto-saving session data..." -ForegroundColor Yellow
-                & "C:\PersistentData\auto-save.ps1"
+            # نسخ احتياطي تلقائي
+            if ($elapsed % $backupInterval -eq 0) {
+                Write-Host "💾 Auto-backup in progress..." -ForegroundColor Yellow
+                & "C:\PersistentData\Configs\auto-backup.ps1"
             }
             
-            Write-Host "[$(Get-Date)] RDP Active - Time left: ${remaining}m" -ForegroundColor Green
+            Write-Host "[$(Get-Date)] RDP Active - Time left: ${remaining}m - Auto-Save: ✅" -ForegroundColor Green
             Start-Sleep -Seconds 60
         }
 
-    - name: Final Session Backup
+    - name: Upload Final Backup to GitHub Releases
       if: always()
       run: |
-        Write-Host "📦 Creating final backup..." -ForegroundColor Yellow
-        & "C:\PersistentData\auto-save.ps1"
-        Write-Host "✅ Final backup completed" -ForegroundColor Green
+        Write-Host "📦 Creating final backup for GitHub Releases..." -ForegroundColor Yellow
+        
+        # إنشاء نسخة احتياطية نهائية
+        $backupFile = & "C:\PersistentData\Configs\auto-backup.ps1"
+        
+        # رفع النسخة إلى GitHub Releases
+        $releaseTag = "rdp-session-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+        
+        # إنشاء Release جديد
+        $releaseData = @{
+            tag_name = $releaseTag
+            name = "RDP Session Backup - $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+            body = "Automated RDP session backup. Connect using: $env:FULL_HOSTNAME"
+            draft = $false
+            prerelease = $false
+        } | ConvertTo-Json
+        
+        # نستخدم GitHub CLI لإنشاء الـ Release
+        gh release create $releaseTag $backupFile --title "RDP Session Backup" --notes "Automated backup from GitHub Actions RDP session"
+        
+        Write-Host "✅ Final backup uploaded to GitHub Releases: $releaseTag" -ForegroundColor Green
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
