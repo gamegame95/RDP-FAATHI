@@ -5,7 +5,6 @@ on:
 
 env:
   PERSISTENT_HOSTNAME: "my-permanent-rdp"
-  BACKUP_BUCKET: "rdp-backup-bucket"
   CONFIG_VERSION: "v2"
 
 jobs:
@@ -35,23 +34,15 @@ jobs:
     - name: Download Previous Session Data
       run: |
         # محاولة تحميل البيانات من الجلسة السابقة
-        $backupUrl = "https://github.com/${{ github.repository }}/releases/download/rdp-backup/session-backup.zip"
-        try {
-            Write-Host "🔄 Downloading previous session data..." -ForegroundColor Yellow
-            Invoke-WebRequest -Uri $backupUrl -OutFile "$env:TEMP\session-backup.zip" -TimeoutSec 30
-            Expand-Archive -Path "$env:TEMP\session-backup.zip" -DestinationPath "C:\PersistentData\" -Force
+        Write-Host "🔄 Checking for previous session data..." -ForegroundColor Yellow
+        if (Test-Path "C:\PersistentData\session-backup.zip") {
+            Expand-Archive -Path "C:\PersistentData\session-backup.zip" -DestinationPath "C:\PersistentData\" -Force
             Write-Host "✅ Previous session data restored" -ForegroundColor Green
-            
-            # تحميل إعدادات النظام
-            if (Test-Path "C:\PersistentData\Configs\system-settings.reg") {
-                reg import "C:\PersistentData\Configs\system-settings.reg" 2>$null
-                Write-Host "✅ System settings restored" -ForegroundColor Green
-            }
-        } catch {
+        } else {
             Write-Host "ℹ️ No previous data found, starting fresh session" -ForegroundColor Cyan
         }
 
-    - name: Install Tailscale with Persistent Identity
+    - name: Install Tailscale
       run: |
         # تثبيت Tailscale
         $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
@@ -60,14 +51,8 @@ jobs:
         Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
 
-        # محاولة استخدام هوية سابقة
-        if (Test-Path "C:\PersistentData\Configs\tailscale-state") {
-            Copy-Item "C:\PersistentData\Configs\tailscale-state\*" "C:\ProgramData\Tailscale\" -Recurse -Force
-            Write-Host "🔄 Restored previous Tailscale state" -ForegroundColor Cyan
-        }
-
         # الاتصال مع اسم مضيف ثابت
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:PERSISTENT_HOSTNAME --accept-routes --reset
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$env:PERSISTENT_HOSTNAME --accept-routes
         Start-Sleep -Seconds 10
         
         $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
@@ -76,10 +61,7 @@ jobs:
         echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
         echo "FULL_HOSTNAME=$fullHostname" >> $env:GITHUB_ENV
 
-        # حفظ حالة Tailscale
-        Copy-Item "C:\ProgramData\Tailscale\*" "C:\PersistentData\Configs\tailscale-state\" -Recurse -Force -ErrorAction SilentlyContinue
-
-    - name: Configure RDP with Persistent Settings
+    - name: Configure RDP
       run: |
         # تفعيل RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
@@ -91,7 +73,7 @@ jobs:
             netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
         }
         
-        # إنشاء/تحديث المستخدم
+        # إنشاء المستخدم
         $password = "!QA2ws3ed"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
         
@@ -116,20 +98,13 @@ jobs:
             "Mozilla.Firefox",
             "Microsoft.VisualStudioCode",
             "Notepad++.Notepad++",
-            "7zip.7zip",
-            "VideoLAN.VLC",
-            "Python.Python.3.11"
+            "7zip.7zip"
         )
         
-        # تثبيت البرامج إذا لم تكن مثبتة
+        # تثبيت البرامج
         foreach ($app in $essentialSoftware) {
-            $isInstalled = winget list --id $app --exact 2>$null
-            if (-not $isInstalled) {
-                Write-Host "📦 Installing $app..." -ForegroundColor Yellow
-                winget install --id $app --silent --accept-package-agreements --accept-source-agreements
-            } else {
-                Write-Host "✅ $app already installed" -ForegroundColor Green
-            }
+            Write-Host "📦 Installing $app..." -ForegroundColor Yellow
+            winget install --id $app --silent --accept-package-agreements --accept-source-agreements
         }
         
         # حفظ قائمة البرامج المثبتة
@@ -137,54 +112,33 @@ jobs:
 
     - name: Configure System Settings
       run: |
-        # إعدادات النظام التي تريد حفظها
-        $systemSettings = @"
-Windows Registry Editor Version 5.00
-
-[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer]
-"ShowSuperHidden"="1"
-
-[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced]
-"Hidden"="1"
-"ShowCompColor"="1"
-"HideFileExt"="0"
-
-[HKEY_CURRENT_USER\Control Panel\Desktop]
-"Wallpaper"=""
-"@
-        
-        $systemSettings | Out-File "C:\PersistentData\Configs\system-settings.reg" -Encoding ASCII
+        # إنشاء ملف إعدادات النظام بدون استخدام here-string
+        $regContent = 'Windows Registry Editor Version 5.00\n\n[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer]\n"ShowSuperHidden"="1"\n\n[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced]\n"Hidden"="1"\n"ShowCompColor"="1"\n"HideFileExt"="0"'
+        $regContent | Out-File "C:\PersistentData\Configs\system-settings.reg"
         reg import "C:\PersistentData\Configs\system-settings.reg" 2>$null
 
     - name: Create Auto-Save Script
       run: |
-        # إنشاء سكريبت للحفظ التلقائي
-        $autoSaveScript = @'
-# Auto-Save Script for RDP Session
+        # إنشاء سكريبت للحفظ التلقائي بدون here-string
+        $autoSaveContent = @'
 `$sessionData = @{
     Timestamp = Get-Date
-    Hostname = "$env:COMPUTERNAME"
-    TailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+    Hostname = `$env:COMPUTERNAME
     InstalledSoftware = winget list
 }
 
-# حفظ بيانات الجلسة
 `$sessionData | ConvertTo-Json | Out-File "C:\PersistentData\session-info.json"
 
-# نسخ الملفات المهمة
 `$importantPaths = @(
     "C:\Users\RDP\Desktop\*",
-    "C:\Users\RDP\Documents\*",
+    "C:\Users\RDP\Documents\*", 
     "C:\Users\RDP\Downloads\*",
     "C:\PersistentData\Configs\*"
 )
 
-Compress-Archive -Path `$importantPaths -DestinationPath "C:\PersistentData\session-backup.zip" -Force -CompressionLevel Optimal
-
-Write-Host "✅ Session data saved: `$(`$sessionData.Timestamp)" -ForegroundColor Green
+Compress-Archive -Path `$importantPaths -DestinationPath "C:\PersistentData\session-backup.zip" -Force
 '@
-        
-        $autoSaveScript | Out-File "C:\PersistentData\auto-save.ps1" -Encoding UTF8
+        $autoSaveContent | Out-File "C:\PersistentData\auto-save.ps1" -Encoding UTF8
 
     - name: Display Connection Information
       run: |
@@ -203,13 +157,12 @@ Write-Host "✅ Session data saved: `$(`$sessionData.Timestamp)" -ForegroundColo
         Write-Host "mstsc /v:$env:TAILSCALE_IP:5555" -ForegroundColor White
         Write-Host ""
         Write-Host "📁 Your files are saved in C:\PersistentData\" -ForegroundColor Cyan
-        Write-Host "🔄 Changes will be preserved between sessions" -ForegroundColor Cyan
         Write-Host "========================================" -ForegroundColor Yellow
 
     - name: Run Session with Auto-Save
       run: |
         $sessionStart = Get-Date
-        $checkpointInterval = 300 # 5 دقائق
+        $checkpointInterval = 300
         
         while (((Get-Date) - $sessionStart).TotalMinutes -lt 350) {
             $elapsed = [math]::Round(((Get-Date) - $sessionStart).TotalMinutes, 1)
@@ -221,24 +174,13 @@ Write-Host "✅ Session data saved: `$(`$sessionData.Timestamp)" -ForegroundColo
                 & "C:\PersistentData\auto-save.ps1"
             }
             
-            Write-Host "[$(Get-Date)] RDP Active - Time left: ${remaining}m - Persistent: ✅" -ForegroundColor Green
+            Write-Host "[$(Get-Date)] RDP Active - Time left: ${remaining}m" -ForegroundColor Green
             Start-Sleep -Seconds 60
         }
 
     - name: Final Session Backup
       if: always()
       run: |
-        Write-Host "📦 Creating final backup before shutdown..." -ForegroundColor Yellow
-        
-        # تشغيل سكريبت الحفظ النهائي
+        Write-Host "📦 Creating final backup..." -ForegroundColor Yellow
         & "C:\PersistentData\auto-save.ps1"
-        
-        # إنشاء نسخة احتياطية نهائية
-        $backupFile = "C:\PersistentData\final-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss').zip"
-        Compress-Archive -Path "C:\PersistentData\*" -DestinationPath $backupFile -Force
-        
-        Write-Host "✅ Final backup created: $backupFile" -ForegroundColor Green
-        Write-Host "📊 Backup size: $([math]::Round((Get-Item $backupFile).Length/1MB, 2)) MB" -ForegroundColor Cyan
-        
-        # هنا يمكنك رفع النسخة إلى تخزين سحابي
-        Write-Host "💡 Upload this file to cloud storage for next session" -ForegroundColor Magenta
+        Write-Host "✅ Final backup completed" -ForegroundColor Green
