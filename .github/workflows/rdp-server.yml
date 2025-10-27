@@ -1,4 +1,4 @@
-name: Simple RDP Server
+name: RDP Server with Clear IP
 
 on:
   workflow_dispatch:
@@ -24,29 +24,50 @@ jobs:
         $password = "!QA2ws3ed"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
         New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
-        Set-LocalUser -Name "RDP" -Password $securePass -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
         
         Restart-Service -Name TermService -Force
 
-    - name: Display Connection Info
+    - name: Get Network Information
       run: |
-        $ip = (Test-Connection -ComputerName (hostname) -Count 1).IPV4Address.IPAddressToString
-        Write-Host "=========================================="
-        Write-Host "RDP SERVER READY"
-        Write-Host "=========================================="
-        Write-Host "IP: $ip"
-        Write-Host "Ports: 3389, 5555, 7777, 8888, 9999"
-        Write-Host "Username: RDP"
-        Write-Host "Password: !QA2ws3ed"
-        Write-Host "=========================================="
+        # Get local IP
+        $localIP = (Test-Connection -ComputerName (hostname) -Count 1).IPV4Address.IPAddressToString
+        echo "LOCAL_IP=$localIP" >> $env:GITHUB_ENV
+        
+        # Try to get public IP
+        try {
+            $publicIP = (Invoke-WebRequest -Uri "https://api.ipify.org" -UseBasicParsing).Content
+            echo "PUBLIC_IP=$publicIP" >> $env:GITHUB_ENV
+        } catch {
+            echo "PUBLIC_IP=Unable to retrieve" >> $env:GITHUB_ENV
+        }
 
-    - name: Keep Alive
+    - name: Display Connection Information
       run: |
-        $startTime = Get-Date
-        while (((Get-Date) - $startTime).TotalMinutes -lt 350) {
-            $remaining = 350 - [math]::Round(((Get-Date) - $startTime).TotalMinutes, 1)
-            Write-Host "[$(Get-Date)] RDP Active - Time left: ${remaining}m"
+        Write-Host ""
+        Write-Host "🎯🎯🎯 RDP CONNECTION INFORMATION 🎯🎯🎯" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host "📍 LOCAL IP: $env:LOCAL_IP" -ForegroundColor Cyan
+        Write-Host "🌍 PUBLIC IP: $env:PUBLIC_IP" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host "👤 USERNAME: RDP" -ForegroundColor White
+        Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
+        Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "💡 CONNECTION EXAMPLES:" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:LOCAL_IP`:3389" -ForegroundColor White
+        Write-Host "mstsc /v:$env:LOCAL_IP`:5555" -ForegroundColor White
+        Write-Host "mstsc /v:$env:PUBLIC_IP`:3389" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host ""
+
+    - name: Keep Server Alive
+      run: |
+        $counter = 0
+        while ($counter -lt 350) {
+            Write-Host "[$(Get-Date)] RDP Server is running... (Time elapsed: ${counter}m)" -ForegroundColor Green
             Start-Sleep -Seconds 60
+            $counter++
         }
