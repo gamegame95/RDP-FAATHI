@@ -1,306 +1,77 @@
-name: Permanent RDP Server with Data Persistence
+name: RDP with Stable Hostname
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'  # كل 5 ساعات
 
 jobs:
   rdp-server:
     runs-on: windows-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
 
     steps:
-    - name: Stop Previous Runs
-      run: |
-        Write-Host "🔄 Checking for previous runs..."
-        $headers = @{
-          "Authorization" = "token ${{ secrets.GITHUB_TOKEN }}"
-          "Accept" = "application/vnd.github.v3+json"
-        }
-        
-        try {
-            $runsUrl = "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=in_progress"
-            $runs = Invoke-RestMethod -Uri $runsUrl -Headers $headers
-            
-            foreach ($run in $runs.workflow_runs) {
-                if ($run.id -ne ${{ github.run_id }} -and $run.name -eq "Permanent RDP Server with Data Persistence") {
-                    Write-Host "⏹️ Stopping previous run: $($run.id)"
-                    $cancelUrl = "https://api.github.com/repos/${{ github.repository }}/actions/runs/$($run.id)/cancel"
-                    Invoke-RestMethod -Uri $cancelUrl -Headers $headers -Method Post
-                }
-            }
-        } catch {
-            Write-Host "⚠️ Could not stop previous runs: $($_.Exception.Message)"
-        }
-
-    - name: Setup Persistent Storage
-      run: |
-        # إنشاء مجلدات للبيانات المستديمة
-        New-Item -ItemType Directory -Path "C:\PersistentData" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\UserData" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Configs" -Force
-        Write-Host "✅ Persistent directories created"
-
-    - name: Download Previous Data
-      run: |
-        # تحميل البيانات المحفوظة من التشغيل السابق (إذا وجدت)
-        Write-Host "📥 Checking for previous data..."
-        
-        # يمكنك استخدام GitHub Releases أو Git LFS لحفظ البيانات
-        # هذا مثال باستخدام قاعدة بسيطة
-        if (Test-Path "C:\PersistentData\last_config.json") {
-            Write-Host "✅ Found previous configuration"
-        } else {
-            Write-Host "ℹ️ No previous data found, starting fresh"
-        }
-
     - name: Install Tailscale
       run: |
-        Write-Host "📥 Installing Tailscale..."
         $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
         $installerPath = "$env:TEMP\tailscale.msi"
         Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
         Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
 
-    - name: Configure Tailscale with Persistent Hostname
+    - name: Configure Tailscale with Stable Hostname
       run: |
-        Write-Host "🔧 Configuring Tailscale..."
+        # Use a consistent hostname
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-rdp-server --accept-routes
         
-        # استخدام hostname ثابت تماماً
-        $persistentHostname = "perm-rdp-server"
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$persistentHostname --accept-routes
-        
-        $tailscaleHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
+        # Get hostname and IP
         $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $tailscaleHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
         
-        echo "RDP_HOSTNAME=$tailscaleHostname" >> $env:GITHUB_ENV
-        echo "RDP_IP=$tailscaleIP" >> $env:GITHUB_ENV
-        
-        # حفظ معلومات الاتصال
-        $connectionInfo = @{
-            hostname = $tailscaleHostname
-            ip = $tailscaleIP
-            timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json
-        
-        $connectionInfo | Out-File -FilePath "C:\PersistentData\connection_info.json" -Encoding UTF8
+        echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
+        echo "TAILSCALE_HOSTNAME=$tailscaleHostname" >> $env:GITHUB_ENV
+        echo "Stable Hostname: $tailscaleHostname"
+        echo "Current IP: $tailscaleIP"
 
-    - name: Configure RDP with Persistent User
+    - name: Configure RDP
       run: |
-        Write-Host "🖥️ Configuring RDP with persistent settings..."
-        
-        # تمكين RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
         
-        # فتح منافذ
         $ports = @(3389, 5555, 7777, 8888, 9999)
         foreach ($port in $ports) {
             netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
         }
         
-        # إنشاء مستخدم (سيتم حفظ إعداداته)
         $password = "!QA2ws3ed"
         $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-        
-        # التحقق إذا المستخدم موجود مسبقاً
-        $userExists = Get-LocalUser -Name "RDPUser" -ErrorAction SilentlyContinue
-        if (-not $userExists) {
-            New-LocalUser -Name "RDPUser" -Password $securePass -AccountNeverExpires
-            Add-LocalGroupMember -Group "Administrators" -Member "RDPUser"
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDPUser"
-            Write-Host "✅ New user created"
-        } else {
-            # تغيير كلمة المرور للمستخدم الموجود
-            Set-LocalUser -Name "RDPUser" -Password $securePass
-            Write-Host "✅ Existing user password updated"
-        }
-        
-        # حفظ إعدادات المستخدم
-        $userConfig = @{
-            username = "RDPUser"
-            password_set = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        } | ConvertTo-Json
-        
-        $userConfig | Out-File -FilePath "C:\PersistentData\user_config.json" -Encoding UTF8
-        
-        # إعدادات RDP إضافية
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "KeepAliveEnable" -Value 1
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "KeepAliveInterval" -Value 1
+        New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
         
         Restart-Service -Name TermService -Force
 
-    - name: Install Essential Software Persistently
+    - name: Display Stable Connection Info
       run: |
-        Write-Host "📦 Installing essential software..."
-        
-        # قائمة بالبرامج التي تريد تثبيتها
-        $softwareConfig = @{
-            installed_software = @()
-            install_time = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        }
-        
-        # تثبيت Chrome (مثال)
-        try {
-            $chromeUrl = "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-D564-463C-AFF1-A69D9E530F96%7D%26iid%3D%7B80763Ef-6D7C-3B3B-3F3F-3F3F3F3F3F3F%7D%26lang%3Den%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dprefers%26ap%3Dstable-arch_x86-statsdef_1%26installdataindex%3Dempty/update2/installers/ChromeSetup.exe"
-            $chromePath = "$env:TEMP\ChromeSetup.exe"
-            
-            # التحقق إذا تم التثبيت مسبقاً
-            if (-not (Test-Path "$env:ProgramFiles\Google\Chrome\Application\chrome.exe")) {
-                Invoke-WebRequest -Uri $chromeUrl -OutFile $chromePath
-                Start-Process -FilePath $chromePath -ArgumentList "/silent", "/install" -Wait
-                $softwareConfig.installed_software += "Google Chrome"
-                Write-Host "✅ Chrome installed"
-            } else {
-                Write-Host "✅ Chrome already installed"
-            }
-        } catch {
-            Write-Host "⚠️ Failed to install Chrome: $($_.Exception.Message)"
-        }
-        
-        # حفظ معلومات التثبيت
-        $softwareConfig | Out-File -FilePath "C:\PersistentData\software_config.json" -Encoding UTF8
-
-    - name: Setup Data Backup System
-      run: |
-        Write-Host "💾 Setting up data backup system..."
-        
-        # سكريبت لحفظ البيانات قبل الإغلاق
-        $backupScript = @'
-# سكريبت لحفظ البيانات الهامة
-function Backup-Data {
-    `$backupDir = "C:\PersistentData\Backups"
-    New-Item -ItemType Directory -Path `$backupDir -Force
-    
-    # حفظ قائمة البرامج المثبتة
-    Get-WmiObject -Class Win32_Product | Select-Object Name, Version | Export-Csv -Path "`$backupDir\installed_software.csv" -NoTypeInformation
-    
-    # حفظ إعدادات النظام
-    systeminfo | Out-File -FilePath "`$backupDir\system_info.txt"
-    
-    # حفظ إعدادات الشبكة
-    ipconfig /all | Out-File -FilePath "`$backupDir\network_info.txt"
-    
-    Write-Host "✅ Data backed up to `$backupDir"
-}
-
-# تسجيل الدالة للتنفيذ عند الإغلاق
-Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
-    Backup-Data
-}
-'@
-        
-        $backupScript | Out-File -FilePath "C:\PersistentData\backup_script.ps1" -Encoding UTF8
-        
-        # تشغيل سكريبت النسخ الاحتياطي
-        & "C:\PersistentData\backup_script.ps1"
-
-    - name: Start Auto-Restart with Data Preservation
-      run: |
-        Write-Host "🔄 Setting up smart auto-restart..."
-        
-        $restartScript = @'
-# سكريبت ذكي لإعادة التشغيل مع حفظ البيانات
-`$restartTime = 5 * 60 * 60  # 5 ساعات
-
-Write-Host "⏰ Smart restart scheduled in 5 hours..."
-
-# حفظ البيانات قبل الإعادة
-function Save-BeforeRestart {
-    `$data = @{
-        last_restart = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-        session_data = @{
-            running_time = "5 hours"
-            user_activity = "active"
-        }
-    } | ConvertTo-Json
-    
-    `$data | Out-File -FilePath "C:\PersistentData\last_session.json" -Encoding UTF8
-    Write-Host "💾 Session data saved"
-}
-
-# جدولة حفظ البيانات قبل الإعادة بـ 5 دقائق
-`$saveTime = `$restartTime - 300  # 5 دقائق قبل الإعادة
-Start-Job -ScriptBlock {
-    Start-Sleep -Seconds `$using:saveTime
-    Save-BeforeRestart
-}
-
-Start-Sleep -Seconds `$restartTime
-
-Write-Host "🔄 Initiating smart restart..."
-
-# إعادة تشغيل الـ Workflow
-`$body = @{
-    ref = "${{ github.ref }}"
-} | ConvertTo-Json
-
-`$headers = @{
-    "Authorization" = "token ${{ secrets.GITHUB_TOKEN }}"
-    "Accept" = "application/vnd.github.v3+json"
-}
-
-try {
-    `$triggerUrl = "https://api.github.com/repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}.yml/dispatches"
-    Invoke-RestMethod -Uri `$triggerUrl -Headers `$headers -Method Post -Body `$body
-    Write-Host "✅ Workflow restart triggered with data preservation"
-} catch {
-    Write-Host "❌ Failed to restart: `$(`$_.Exception.Message)"
-}
-'@
-        
-        $restartScript | Out-File -FilePath "$env:TEMP\smart_restart.ps1" -Encoding UTF8
-        Start-Process powershell -ArgumentList "-File", "$env:TEMP\smart_restart.ps1" -WindowStyle Hidden
-
-    - name: Display Persistent Connection Info
-      run: |
-        # قراءة البيانات المحفوظة
-        $lastSession = "New Session"
-        if (Test-Path "C:\PersistentData\last_session.json") {
-            $sessionData = Get-Content "C:\PersistentData\last_session.json" | ConvertFrom-Json
-            $lastSession = $sessionData.last_restart
-        }
-        
         Write-Host ""
-        Write-Host "🎯 PERSISTENT RDP SERVER READY!" -ForegroundColor Green
+        Write-Host "🎯 STABLE RDP CONNECTION" -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Yellow
-        Write-Host "🔗 HOSTNAME: $env:RDP_HOSTNAME" -ForegroundColor Cyan
-        Write-Host "🌐 IP: $env:RDP_IP" -ForegroundColor Cyan
-        Write-Host "👤 USERNAME: RDPUser" -ForegroundColor White
+        Write-Host "🔗 HOSTNAME: $env:TAILSCALE_HOSTNAME" -ForegroundColor Cyan
+        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+        Write-Host "👤 USERNAME: RDP" -ForegroundColor White
         Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
-        Write-Host "💾 DATA: Persistent across restarts" -ForegroundColor Magenta
-        Write-Host "🕐 LAST SESSION: $lastSession" -ForegroundColor White
         Write-Host "========================================" -ForegroundColor Yellow
         Write-Host ""
-        Write-Host "💡 CONNECT: mstsc /v:$env:RDP_HOSTNAME:3389" -ForegroundColor White
-        Write-Host "🔄 Auto-restart with data preservation every 5 hours" -ForegroundColor Green
+        Write-Host "💡 CONNECT USING HOSTNAME (RECOMMENDED):" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_HOSTNAME:3389" -ForegroundColor White
+        Write-Host ""
+        Write-Host "💡 OR USING CURRENT IP:" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
 
-    - name: Keep Alive with Data Monitoring
+    - name: Keep Server Alive
       run: |
         $counter = 0
-        $maxMinutes = 340
-        
-        while ($counter -lt $maxMinutes) {
-            $hours = [math]::Floor($counter / 60)
-            $minutes = $counter % 60
-            
-            # حفظ تقدم الجلسة كل 30 دقيقة
-            if ($counter % 30 -eq 0) {
-                $sessionProgress = @{
-                    uptime_minutes = $counter
-                    last_update = (Get-Date).ToString("HH:mm:ss")
-                } | ConvertTo-Json
-                
-                $sessionProgress | Out-File -FilePath "C:\PersistentData\session_progress.json" -Encoding UTF8
-            }
-            
-            Write-Host "🖥️ Persistent RDP Active | Uptime: $hoursh $($minutes)m" -ForegroundColor Green
-            Write-Host "🔗 $env:RDP_HOSTNAME | 💾 Data preserved" -ForegroundColor Cyan
-            
+        while ($counter -lt 350) {
+            Write-Host "[$(Get-Date)] RDP: $env:TAILSCALE_HOSTNAME ($env:TAILSCALE_IP) - Time: ${counter}m" -ForegroundColor Green
             Start-Sleep -Seconds 60
             $counter++
         }
-        
-        Write-Host "💾 Finalizing data preservation..." -ForegroundColor Cyan
