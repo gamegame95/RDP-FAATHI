@@ -1,4 +1,4 @@
-name: Permanent RDP Server
+name: RDP with Stable Hostname
 
 on:
   workflow_dispatch:
@@ -11,125 +11,67 @@ jobs:
     steps:
     - name: Install Tailscale
       run: |
-        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
-        Start-Process msiexec.exe -ArgumentList "/i", "$env:TEMP\tailscale.msi", "/quiet", "/norestart" -Wait
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+        $installerPath = "$env:TEMP\tailscale.msi"
+        Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+        Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
         Start-Sleep -Seconds 10
 
-    - name: Setup Tailscale
+    - name: Configure Tailscale with Stable Hostname
       run: |
-        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-permanent-rdp
-        Start-Sleep -Seconds 10
-        $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-        $hostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
-        echo "RDP_IP=$ip" >> $env:GITHUB_ENV
-        echo "RDP_HOSTNAME=$hostname" >> $env:GITHUB_ENV
-
-    - name: Create Persistent Storage First
-      run: |
-        # إنشاء المجلدات المستديمة أولاً
-        New-Item -ItemType Directory -Path "C:\PersistentData" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Desktop" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Documents" -Force
-        New-Item -ItemType Directory -Path "C:\PersistentData\Downloads" -Force
-        Write-Host "✅ Persistent storage created"
-
-    - name: Configure Windows RDP and User
-      run: |
-        # تفعيل RDP في الريجستري
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server" /v fDenyTSConnections /t REG_DWORD /d 0 /f
-        reg add "HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" /v UserAuthentication /t REG_DWORD /d 0 /f
+        # Use a consistent hostname
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-rdp-server --accept-routes
         
-        # فتح المنافذ في الجدار الناري
-        netsh advfirewall firewall add rule name="RDP-3389" dir=in action=allow protocol=TCP localport=3389
-        netsh advfirewall firewall add rule name="RDP-5555" dir=in action=allow protocol=TCP localport=5555
-        netsh advfirewall firewall add rule name="RDP-7777" dir=in action=allow protocol=TCP localport=7777
-        netsh advfirewall firewall add rule name="RDP-8888" dir=in action=allow protocol=TCP localport=8888
-        netsh advfirewall firewall add rule name="RDP-9999" dir=in action=allow protocol=TCP localport=9999
+        # Get hostname and IP
+        $tailscaleIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+        $tailscaleHostname = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json | ConvertFrom-Json | Select-Object -ExpandProperty Self | Select-Object -ExpandProperty DNSName
         
-        # إنشاء المستخدم RDP
-        net user RDP "Password123!" /add /y
-        net localgroup administrators RDP /add
-        net localgroup "Remote Desktop Users" RDP /add
-        Write-Host "✅ User RDP created"
+        echo "TAILSCALE_IP=$tailscaleIP" >> $env:GITHUB_ENV
+        echo "TAILSCALE_HOSTNAME=$tailscaleHostname" >> $env:GITHUB_ENV
+        echo "Stable Hostname: $tailscaleHostname"
+        echo "Current IP: $tailscaleIP"
 
-    - name: Setup User Profile and Links
+    - name: Configure RDP
       run: |
-        # الانتظار حتى ينشئ النظام مجلدات المستخدم
-        Start-Sleep -Seconds 5
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
         
-        # إنشاء مجلدات المستخدم إذا لم تكن موجودة
-        New-Item -ItemType Directory -Path "C:\Users\RDP\Desktop" -Force
-        New-Item -ItemType Directory -Path "C:\Users\RDP\Documents" -Force
-        New-Item -ItemType Directory -Path "C:\Users\RDP\Downloads" -Force
-        
-        # نسخ المحتوى من المجلدات المؤقتة إلى المستديمة (إذا كان هناك محتوى)
-        Copy-Item -Path "C:\Users\RDP\Desktop\*" -Destination "C:\PersistentData\Desktop\" -Recurse -Force -ErrorAction SilentlyContinue
-        Copy-Item -Path "C:\Users\RDP\Documents\*" -Destination "C:\PersistentData\Documents\" -Recurse -Force -ErrorAction SilentlyContinue
-        Copy-Item -Path "C:\Users\RDP\Downloads\*" -Destination "C:\PersistentData\Downloads\" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        # حذف المجلدات الأصلية واستبدالها بروابط
-        Remove-Item -Path "C:\Users\RDP\Desktop" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "C:\Users\RDP\Documents" -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path "C:\Users\RDP\Downloads" -Recurse -Force -ErrorAction SilentlyContinue
-        
-        # إنشاء روابط رمزية
-        cmd /c "mklink /J `"C:\Users\RDP\Desktop`" `"C:\PersistentData\Desktop`""
-        cmd /c "mklink /J `"C:\Users\RDP\Documents`" `"C:\PersistentData\Documents`""
-        cmd /c "mklink /J `"C:\Users\RDP\Downloads`" `"C:\PersistentData\Downloads`""
-        Write-Host "✅ User profile links created"
-
-    - name: Start RDP Services
-      run: |
-        # إعادة تشغيل خدمة RDP
-        Stop-Service -Name "TermService" -Force
-        Start-Service -Name "TermService"
-        Write-Host "✅ RDP services started"
-
-    - name: Install Software
-      run: |
-        # تثبيت البرامج الأساسية
-        winget install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements
-        winget install --id Mozilla.Firefox --silent --accept-package-agreements --accept-source-agreements
-        winget install --id Microsoft.VisualStudioCode --silent --accept-package-agreements --accept-source-agreements
-        Write-Host "✅ Software installed"
-
-    - name: Show Connection Info
-      run: |
-        Write-Host ""
-        Write-Host "================================================"
-        Write-Host "🎯 PERMANENT RDP SERVER READY"
-        Write-Host "================================================"
-        Write-Host "🔗 HOSTNAME: $env:RDP_HOSTNAME"
-        Write-Host "🌐 IP: $env:RDP_IP"
-        Write-Host "👤 USERNAME: RDP"
-        Write-Host "🔑 PASSWORD: Password123!"
-        Write-Host "🚪 PORTS: 3389, 5555, 7777, 8888, 9999"
-        Write-Host "💾 PERSISTENT STORAGE: C:\PersistentData\"
-        Write-Host "🔄 NEW SESSION: All data will be saved"
-        Write-Host "================================================"
-        Write-Host ""
-        Write-Host "💡 CONNECT USING:"
-        Write-Host "mstsc /v:$env:RDP_HOSTNAME:3389"
-        Write-Host ""
-        Write-Host "💡 ALTERNATIVE PORTS:"
-        Write-Host "mstsc /v:$env:RDP_HOSTNAME:5555"
-        Write-Host "mstsc /v:$env:RDP_HOSTNAME:7777"
-        Write-Host "mstsc /v:$env:RDP_HOSTNAME:8888"
-        Write-Host "mstsc /v:$env:RDP_HOSTNAME:9999"
-        Write-Host ""
-        Write-Host "🔧 DIRECT IP:"
-        Write-Host "mstsc /v:$env:RDP_IP:3389"
-        Write-Host "================================================"
-
-    - name: Keep Server Running
-      run: |
-        $count = 0
-        Write-Host "🔄 RDP Server started successfully!"
-        Write-Host "📡 Waiting for connections..."
-        while ($count -lt 350) {
-            $timeLeft = 350 - $count
-            Write-Host "[$(Get-Date)] RDP Active - $env:RDP_HOSTNAME - Time left: ${timeLeft}m"
-            Start-Sleep -Seconds 60
-            $count++
+        $ports = @(3389, 5555, 7777, 8888, 9999)
+        foreach ($port in $ports) {
+            netsh advfirewall firewall add rule name="RDP-$port" dir=in action=allow protocol=TCP localport=$port
         }
-        Write-Host "⏰ Session completed - All data saved in C:\PersistentData\"
+        
+        $password = "!QA2ws3ed"
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+        New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+        
+        Restart-Service -Name TermService -Force
+
+    - name: Display Stable Connection Info
+      run: |
+        Write-Host ""
+        Write-Host "🎯 STABLE RDP CONNECTION" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host "🔗 HOSTNAME: $env:TAILSCALE_HOSTNAME" -ForegroundColor Cyan
+        Write-Host "🌐 CURRENT IP: $env:TAILSCALE_IP" -ForegroundColor Cyan
+        Write-Host "👤 USERNAME: RDP" -ForegroundColor White
+        Write-Host "🔑 PASSWORD: !QA2ws3ed" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "💡 CONNECT USING HOSTNAME (RECOMMENDED):" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_HOSTNAME:3389" -ForegroundColor White
+        Write-Host ""
+        Write-Host "💡 OR USING CURRENT IP:" -ForegroundColor Magenta
+        Write-Host "mstsc /v:$env:TAILSCALE_IP:3389" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Yellow
+
+    - name: Keep Server Alive
+      run: |
+        $counter = 0
+        while ($counter -lt 350) {
+            Write-Host "[$(Get-Date)] RDP: $env:TAILSCALE_HOSTNAME ($env:TAILSCALE_IP) - Time: ${counter}m" -ForegroundColor Green
+            Start-Sleep -Seconds 60
+            $counter++
+        }
